@@ -1,0 +1,51 @@
+name: 悦临平 H5 接口测试
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: inspect 只检查；signin 真实等待后尝试签到
+        required: true
+        type: choice
+        default: inspect
+        options:
+          - inspect
+          - signin
+      max_wait_minutes:
+        description: 等待上限（0～200 分钟；完整三小时测试填 190）
+        required: true
+        default: '190'
+        type: string
+  # 默认不执行定时签到，需设置仓库变量 ENABLE_SCHEDULE=true。
+  # UTC 12:17，即北京时间 20:17；调度可能延迟。
+  schedule:
+    - cron: '17 12 * * *'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: linping-test-account-19426008
+  cancel-in-progress: false
+
+jobs:
+  test:
+    if: github.event_name == 'workflow_dispatch' || vars.ENABLE_SCHEDULE == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 220
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24'
+      - name: 离线自测（不接触 Token）
+        run: node --test tests/linping.test.mjs
+      - name: 验证账号并运行选定测试
+        env:
+          LINPING_TOKEN: ${{ secrets.LINPING_TOKEN }}
+          LINPING_DEVICE_ID: ${{ secrets.LINPING_DEVICE_ID }}
+          MODE: ${{ github.event_name == 'schedule' && 'signin' || inputs.mode }}
+          MAX_WAIT_MINUTES: ${{ github.event_name == 'schedule' && '190' || inputs.max_wait_minutes }}
+        run: node scripts/linping.mjs

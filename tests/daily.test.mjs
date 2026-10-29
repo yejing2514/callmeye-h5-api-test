@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {Stop,configFrom,identity,tokenIdentity,testDeviceId,Client,run,submitOnce} from '../scripts/linping.mjs';
+import {Stop,configFrom,identity,tokenIdentity,testDeviceId,Client,run,submitOnce} from '../scripts/callmeye.mjs';
 import {MAX_ACCOUNTS,accountsFrom,executionEnv,randomWindow,planFrom,waitForStart,executeAccount} from '../scripts/daily.mjs';
 
 const entries = [

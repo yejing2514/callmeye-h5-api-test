@@ -76,7 +76,7 @@ export function tokenIdentity(token) {
   };
   const userId = field('user_id'), tenantId = field('t_id'), tenantIdIn = field('t_id_in');
   if (tenantId !== EXPECTED_TENANT || tenantIdIn !== EXPECTED_TENANT) {
-    throw new Stop('Token 租户与悦临平测试租户不一致；未发送请求。');
+    throw new Stop('Token 租户与测试租户不一致；未发送请求。');
   }
   return {userId, tenantId, tenantIdIn};
 }
@@ -314,7 +314,7 @@ async function main() {
   } finally {
     if (process.env.GITHUB_STEP_SUMMARY) {
       // Every message above is generated locally, with only validated numeric fields.
-      await appendFile(process.env.GITHUB_STEP_SUMMARY,'## 悦临平测试结果\n\n'+lines.map(x=>'- '+x).join('\n')+'\n');
+      await appendFile(process.env.GITHUB_STEP_SUMMARY,'## 测试结果\n\n'+lines.map(x=>'- '+x).join('\n')+'\n');
     }
   }
 }

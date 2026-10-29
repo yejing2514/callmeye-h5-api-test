@@ -4,7 +4,7 @@ import {createHash} from 'node:crypto';
 import {readFile} from 'node:fs/promises';
 import {API,STATIC,UA,Stop,configFrom,signature,identity,jsonRequest,ok,tenant,Client,
   activityFromPage,checkRule,checkWaitBudget,signed,session,eligible,submitOnce,run,safeCode,
-  MAX_WAIT_MINUTES,CHECKPOINT_INTERVAL_MS} from '../scripts/linping.mjs';
+  MAX_WAIT_MINUTES,CHECKPOINT_INTERVAL_MS} from '../scripts/callmeye.mjs';
 
 const user={id:19426008,user_id:19426008,t_id:59,gold:180};
 const config={token:'offline-test-token',mode:'inspect',maxWait:1};
@@ -235,7 +235,7 @@ test('inspect is read-only for user activity: no stay session, no reward',async(
   assert.ok(logs.some(x=>x.includes('inspect')));assert.ok(logs.every(x=>!x.includes(config.token)));
 });
 test('workflow runs real daily jobs with secret-free matrix and preserves manual modes',async()=>{
-  const yaml=await readFile(new URL('../.github/workflows/linping.yml',import.meta.url),'utf8');
+  const yaml=await readFile(new URL('../.github/workflows/callmeye.yml',import.meta.url),'utf8');
   assert.match(yaml,/schedule:/);
   assert.match(yaml,/contents: read/);assert.match(yaml,/cancel-in-progress: false/);
   assert.match(yaml,/secrets\.LINPING_TOKEN/);assert.doesNotMatch(yaml,/pull_request_target|contents: write/);

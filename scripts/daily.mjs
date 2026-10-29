@@ -2,7 +2,7 @@ import {randomInt} from 'node:crypto';
 import {appendFile} from 'node:fs/promises';
 import {performance} from 'node:perf_hooks';
 import {pathToFileURL} from 'node:url';
-import {Stop, configFrom, expectedUserId, tokenIdentity, testDeviceId, run} from './linping.mjs';
+import {Stop, configFrom, expectedUserId, tokenIdentity, testDeviceId, run} from './callmeye.mjs';
 
 export const MAX_ACCOUNTS = 10;
 export const MAX_RANDOM_WINDOW_MINUTES = 90;
@@ -134,7 +134,7 @@ async function main() {
     process.exitCode = 1;
   } finally {
     if (env.GITHUB_STEP_SUMMARY) await appendFile(env.GITHUB_STEP_SUMMARY,
-      '## 悦临平任务结果\n\n' + lines.map(line => '- ' + line).join('\n') + '\n');
+      '## 任务结果\n\n' + lines.map(line => '- ' + line).join('\n') + '\n');
   }
 }
 

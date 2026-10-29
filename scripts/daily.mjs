@@ -70,12 +70,28 @@ export function planFrom(env, deps = {}) {
   const windowMs = scheduled ? randomWindow(env) * 60000 : 0;
   const choose = deps.randomInt || randomInt;
   if (!Number.isSafeInteger(now) || now < 0) throw new Stop('计划时间无效。');
-  return {include:accounts.map((_, index) => {
+  // "<index>:<start_at_ms>" strings, not objects: GitHub registers every line of
+  // a multi-line secret as a masked value, which silently drops any job output
+  // containing those fragments - a pretty-printed secret even masks lone braces
+  // and brackets. Keeping the list unbracketed keeps the matrix readable.
+  return {slots:accounts.map((_, index) => {
     const delay = scheduled ? choose(0, windowMs + 1) : 0;
     if (!Number.isSafeInteger(delay) || delay < 0 || delay > windowMs) throw new Stop('随机启动时间超出窗口。');
     if (!Number.isSafeInteger(now + delay)) throw new Stop('计划时间无效。');
-    return {account_index:index, start_at_ms:scheduled ? now + delay : 0};
+    return `${index}:${scheduled ? now + delay : 0}`;
   })};
+}
+
+// Only index and planned time travel between jobs; the token never does.
+export function planSlot(value) {
+  const invalid = () => new Stop('账号计划无效；未发送请求。');
+  const match = /^(\d{1,2}):(\d{1,16})$/.exec(String(value ?? ''));
+  if (!match) throw invalid();
+  const index = Number(match[1]), startAt = Number(match[2]);
+  // Canonical form only: no leading zeros, no float or exponent notation.
+  if (String(index) !== match[1] || !Number.isSafeInteger(startAt) ||
+      String(startAt) !== match[2] || index >= MAX_ACCOUNTS) throw invalid();
+  return {index, startAt};
 }
 
 export async function waitForStart(startAt, env, log, deps = {}) {
@@ -98,13 +114,12 @@ export async function waitForStart(startAt, env, log, deps = {}) {
   }
 }
 
-export async function executeAccount(env, index, deps = {}) {
+export async function executeAccount(env, slot, deps = {}) {
   const accounts = accountsFrom(executionEnv(env));
-  if (!/^\d+$/.test(String(index)) || !Number.isSafeInteger(Number(index)) || Number(index) >= accounts.length) {
-    throw new Stop('账号索引无效；未发送请求。');
-  }
-  const config = accounts[Number(index)], log = deps.log || console.log;
-  await waitForStart(env.START_AT_MS, env, log, deps);
+  const {index, startAt} = planSlot(slot);
+  if (index >= accounts.length) throw new Stop('账号索引无效；未发送请求。');
+  const config = accounts[index], log = deps.log || console.log;
+  await waitForStart(String(startAt), env, log, deps);
   log(`开始执行账号 ${Number(index) + 1}/${accounts.length}；模式 ${config.mode}。`);
   return await (deps.run || run)(config, deps);
 }
@@ -130,11 +145,13 @@ async function main() {
     if (process.argv[2] === '--plan' && process.argv.length === 3) {
       const plan = planFrom(env);
       if (!env.GITHUB_OUTPUT) throw new Stop('缺少 GITHUB_OUTPUT；未导出计划。');
-      await appendFile(env.GITHUB_OUTPUT, `matrix=${JSON.stringify(plan)}\n`);
-      log(`已校验 ${plan.include.length} 个账号；只导出索引和计划时间，不导出凭证。`);
+      // Emitted as an unbracketed fragment ("0:0","1:1"): the consumer wraps it
+      // with format('[{0}]'), so no bracket ever sits inside a redactable output.
+      await appendFile(env.GITHUB_OUTPUT, `slots=${plan.slots.map(slot => JSON.stringify(slot)).join(',')}\n`);
+      log(`已校验 ${plan.slots.length} 个账号；只导出索引和计划时间，不导出凭证。`);
     } else if (process.argv[2] === '--account' && process.argv.length === 4) {
       await executeAccount(env, process.argv[3], {log});
-    } else throw new Stop('用法：daily.mjs --plan 或 daily.mjs --account <从 0 开始的索引>。');
+    } else throw new Stop('用法：daily.mjs --plan 或 daily.mjs --account <"索引:计划时间戳">。');
   } catch (error) {
     log(error instanceof Stop ? error.message : '发生未预期错误；不输出原始异常以保护凭证，请人工核对本账号记录。');
     process.exitCode = 1;

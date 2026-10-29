@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {Stop,configFrom,identity,tokenIdentity,testDeviceId,Client,run,submitOnce} from '../scripts/callmeye.mjs';
-import {MAX_ACCOUNTS,MAX_REMARK_LENGTH,accountsFrom,executionEnv,randomWindow,planFrom,waitForStart,executeAccount} from '../scripts/daily.mjs';
+import {MAX_ACCOUNTS,MAX_REMARK_LENGTH,accountsFrom,executionEnv,randomWindow,planFrom,planSlot,waitForStart,executeAccount} from '../scripts/daily.mjs';
 
 const entries = [
   {user_id:19426008,token:'offline-token-one',device_id:'authorized-test-device-one'},
@@ -157,11 +157,31 @@ test('same account with different tokens is rejected before running, including a
 test('token-only plan and execution expose no claims or generated device IDs in matrix',async()=>{
   const env={...envFor([{token:tokenFor(19426009)}]),GITHUB_EVENT_NAME:'schedule'};
   const plan=planFrom(env,{now:()=>now,randomInt:()=>0});
-  assert.deepEqual(plan,{include:[{account_index:0,start_at_ms:now}]});
-  await executeAccount({...env,START_AT_MS:String(now)},0,{now:()=>now,log:()=>{},run:async config=>{
+  assert.deepEqual(plan,{slots:[`0:${now}`]});
+  await executeAccount(env,`0:${now}`,{now:()=>now,log:()=>{},run:async config=>{
     assert.equal(config.userId,19426009); assert.equal(config.device,testDeviceId(19426009));
     assert.equal(config.mode,'signin');
   }});
+});
+
+test('plan output is brace-free so GitHub never redacts it as a secret',()=>{
+  // A multi-line LINPING_ACCOUNTS secret makes GitHub mask every line, including
+  // lone braces and brackets, which silently drops any job output containing them.
+  const plan = planFrom({...envFor(),GITHUB_EVENT_NAME:'schedule'},{now:()=>now,randomInt:()=>0});
+  const exported = `slots=${plan.slots.map(slot => JSON.stringify(slot)).join(',')}`;
+  assert.doesNotMatch(exported,/[{}[\]]/);
+  assert.match(exported,/^slots="\d{1,2}:\d{1,16}"(,"\d{1,2}:\d{1,16}")*$/);
+  // Mirrors the consumer: fromJSON(format('[{0}]', needs.prepare.outputs.slots)).
+  assert.deepEqual(JSON.parse(`[${exported.slice('slots='.length)}]`),plan.slots);
+  plan.slots.forEach((slot,i)=>assert.deepEqual(planSlot(slot),{index:i,startAt:now}));
+});
+
+test('plan slots reject tampering, old numeric indices and out-of-range indices',()=>{
+  assert.deepEqual(planSlot('2:123'),{index:2,startAt:123});
+  for (const slot of ['','0','-1','0:','0:-1','0:1.5','0:NaN','00:0','10:0','2 ','a:1',
+    '0:12345678901234567',undefined,null,{},[],'0:1:2']) {
+    assert.throws(()=>planSlot(slot),Stop);
+  }
 });
 
 test('daily event selects real signin and a 200 minute wait, manual selection is preserved',()=>{
@@ -181,7 +201,7 @@ test('daily plan independently samples accounts, exports only indices and numeri
   let calls = 0;
   const plan = planFrom({...envFor(),GITHUB_EVENT_NAME:'schedule'},
     {now:()=>now,randomInt:(min,max)=>{assert.equal(min,0); assert.equal(max,3600001); return calls++ ? max-1 : 0;}});
-  assert.deepEqual(plan,{include:[{account_index:0,start_at_ms:now},{account_index:1,start_at_ms:now+3600000}]});
+  assert.deepEqual(plan,{slots:[`0:${now}`,`1:${now+3600000}`]});
   const output = JSON.stringify(plan);
   for (const entry of entries) for (const value of Object.values(entry)) assert.ok(!output.includes(String(value)));
   assert.throws(()=>planFrom({...envFor(),GITHUB_EVENT_NAME:'schedule'},{now:()=>now,randomInt:()=>3600001}),Stop);
@@ -190,19 +210,20 @@ test('daily plan independently samples accounts, exports only indices and numeri
 test('manual planning never delays or samples randomness',()=>{
   const plan = planFrom({...envFor(),GITHUB_EVENT_NAME:'workflow_dispatch',RANDOM_WINDOW_MINUTES:'unused'},
     {now:()=>now,randomInt:()=>{throw new Error('must not sample');}});
-  assert.ok(plan.include.every(item=>item.start_at_ms===0));
+  assert.ok(plan.slots.every(slot=>slot.endsWith(':0')));
 });
 
 test('zero random window produces immediate scheduled starts',()=>{
   const plan = planFrom({...envFor(),GITHUB_EVENT_NAME:'schedule',RANDOM_WINDOW_MINUTES:'0'},
     {now:()=>now,randomInt:(min,max)=>{assert.equal(max,1);return 0;}});
-  assert.ok(plan.include.every(item=>item.start_at_ms===now));
+  assert.ok(plan.slots.every(slot=>slot===`${plan.slots.indexOf(slot)}:${now}`));
 });
 
 test('scheduled waiting happens before business requests, and does not count as dwell',async()=>{
   let elapsed = 0, started = false;
-  const env = {...envFor(),GITHUB_EVENT_NAME:'schedule',START_AT_MS:String(now+125000)};
-  await executeAccount(env,'1',{now:()=>now,clock:()=>elapsed,
+  // The planned start time travels inside the slot, not through env.
+  const env = {...envFor(),GITHUB_EVENT_NAME:'schedule'};
+  await executeAccount(env,`1:${now+125000}`,{now:()=>now,clock:()=>elapsed,
     sleep:async ms=>{assert.equal(started,false);assert.ok(ms<=60000);elapsed+=ms;},log:()=>{},
     run:async config=>{started=true;assert.equal(elapsed,125000);assert.equal(config.userId,19426009);assert.equal(config.mode,'signin');}});
   assert.equal(started,true);
@@ -218,11 +239,13 @@ test('late same-day start is immediate; cross-day or unbounded plans stop',async
 
 test('manual invocation is immediate and selected accounts never share mutable config',async()=>{
   const seen=[];
-  for (const index of [0,1]) await executeAccount(envFor(),String(index),
+  for (const index of [0,1]) await executeAccount(envFor(),`${index}:0`,
     {log:()=>{},sleep:()=>{throw new Error('must not sleep');},run:async config=>seen.push(config)});
   assert.notEqual(seen[0],seen[1]);
   seen[0].token='changed'; assert.equal(seen[1].token,entries[1].token);
-  for (const index of [-1,2,'NaN','1.5']) await assert.rejects(executeAccount(envFor(),index),Stop);
+  for (const slot of [undefined,'','0','-1',2,'NaN','1.5','2:0','0:abc']) {
+    await assert.rejects(executeAccount(envFor(),slot),Stop);
+  }
 });
 
 test('each Client uses its own user header, token and device session',async()=>{
@@ -305,7 +328,7 @@ test('unverified or expired token rejected by server never causes a reward attem
 
 test('one account failure does not mutate or disable another account',async()=>{
   const logs=[];
-  await assert.rejects(executeAccount(envFor(),0,{log:()=>{},run:async()=>{throw new Stop('登录失效');}}),Stop);
-  await executeAccount(envFor(),1,{log:()=>{},run:async config=>logs.push(config.userId)});
+  await assert.rejects(executeAccount(envFor(),'0:0',{log:()=>{},run:async()=>{throw new Stop('登录失效');}}),Stop);
+  await executeAccount(envFor(),'1:0',{log:()=>{},run:async config=>logs.push(config.userId)});
   assert.deepEqual(logs,[19426009]);
 });

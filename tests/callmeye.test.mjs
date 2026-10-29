@@ -244,7 +244,8 @@ test('workflow runs real daily jobs with secret-free matrix and preserves manual
   assert.match(yaml,/MAX_WAIT_MINUTES: \$\{\{ inputs\.max_wait_minutes \}\}/);
   assert.ok(yaml.indexOf('node --test')<yaml.indexOf('id: plan'));
   assert.match(yaml,/needs: prepare/);
-  assert.match(yaml,/matrix: \$\{\{ fromJSON\(needs\.prepare\.outputs\.matrix\) \}\}/);
+  assert.match(yaml,/slot: \$\{\{ fromJSON\(format\('\[\{0\}\]', needs\.prepare\.outputs\.slots\)\) \}\}/);
+  assert.match(yaml,/ACCOUNT_SLOT: \$\{\{ matrix\.slot \}\}/);
   assert.match(yaml,/fail-fast: false/);
   assert.match(yaml,/max-parallel: 3/);
   assert.match(yaml,/timeout-minutes: 330/);

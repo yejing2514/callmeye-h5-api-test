@@ -33,7 +33,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     outputs:
-      matrix: ${{ steps.plan.outputs.matrix }}
+      # A brace-free list of "<index>:<start_at_ms>" strings. GitHub registers
+      # every line of a multi-line secret as a masked value and silently drops
+      # job outputs containing those fragments, including curly braces.
+      slots: ${{ steps.plan.outputs.slots }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
@@ -56,7 +59,7 @@ jobs:
         run: node scripts/daily.mjs --plan
 
   signin:
-    name: 账号 ${{ matrix.account_index }}
+    name: 账号 ${{ matrix.slot }}
     needs: prepare
     runs-on: ubuntu-latest
     # 最多随机等 90 分钟 + 实际停留 200 分钟 + 请求/安装缓冲。
@@ -64,7 +67,10 @@ jobs:
     strategy:
       fail-fast: false
       max-parallel: 3
-      matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
+      matrix:
+        # slots is an unbracketed fragment ("0:0","1:1"); wrap it here so braces
+        # and brackets never appear inside a step output GitHub could redact.
+        slot: ${{ fromJSON(format('[{0}]', needs.prepare.outputs.slots)) }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
@@ -81,6 +87,6 @@ jobs:
           MODE: ${{ inputs.mode }}
           MAX_WAIT_MINUTES: ${{ inputs.max_wait_minutes }}
           RANDOM_WINDOW_MINUTES: ${{ vars.RANDOM_WINDOW_MINUTES || '60' }}
-          START_AT_MS: ${{ matrix.start_at_ms }}
-          ACCOUNT_INDEX: ${{ matrix.account_index }}
-        run: node scripts/daily.mjs --account "$ACCOUNT_INDEX"
+          # "<索引>:<计划时间戳>"，计划时间与 Index 一并来自矩阵维度本身。
+          ACCOUNT_SLOT: ${{ matrix.slot }}
+        run: node scripts/daily.mjs --account "$ACCOUNT_SLOT"

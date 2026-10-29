@@ -12,27 +12,28 @@ on:
           - inspect
           - signin
       max_wait_minutes:
-        description: 等待上限（0～200 分钟；完整三小时测试填 190）
+        description: 等待上限（0～200 分钟；完整三小时测试建议填 200）
         required: true
-        default: '190'
+        default: '200'
         type: string
-  # 默认不执行定时签到，需设置仓库变量 ENABLE_SCHEDULE=true。
-  # UTC 12:17，即北京时间 20:17；调度可能延迟。
+  # UTC 01:20，即北京时间 09:20；每个账号另外随机延迟 0～60 分钟。
+  # 随机窗口可用仓库变量 RANDOM_WINDOW_MINUTES 修改（0～90）。GitHub 可能延迟。
   schedule:
-    - cron: '17 12 * * *'
+    - cron: '20 1 * * *'
 
 permissions:
   contents: read
 
 concurrency:
-  group: linping-test-account-19426008
+  group: linping-signin-accounts
   cancel-in-progress: false
 
 jobs:
-  test:
-    if: github.event_name == 'workflow_dispatch' || vars.ENABLE_SCHEDULE == 'true'
+  prepare:
     runs-on: ubuntu-latest
-    timeout-minutes: 220
+    timeout-minutes: 10
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
@@ -41,11 +42,45 @@ jobs:
         with:
           node-version: '24'
       - name: 离线自测（不接触 Token）
-        run: node --test tests/linping.test.mjs
-      - name: 验证账号并运行选定测试
+        run: node --test tests/*.test.mjs
+      - name: 校验账号配置并生成启动计划（不请求业务接口）
+        id: plan
         env:
+          LINPING_ACCOUNTS: ${{ secrets.LINPING_ACCOUNTS }}
           LINPING_TOKEN: ${{ secrets.LINPING_TOKEN }}
           LINPING_DEVICE_ID: ${{ secrets.LINPING_DEVICE_ID }}
-          MODE: ${{ github.event_name == 'schedule' && 'signin' || inputs.mode }}
-          MAX_WAIT_MINUTES: ${{ github.event_name == 'schedule' && '190' || inputs.max_wait_minutes }}
-        run: node scripts/linping.mjs
+          LINPING_USER_ID: ${{ vars.LINPING_USER_ID || '19426008' }}
+          MODE: ${{ inputs.mode }}
+          MAX_WAIT_MINUTES: ${{ inputs.max_wait_minutes }}
+          RANDOM_WINDOW_MINUTES: ${{ vars.RANDOM_WINDOW_MINUTES || '60' }}
+        run: node scripts/daily.mjs --plan
+
+  signin:
+    name: 账号 ${{ matrix.account_index }}
+    needs: prepare
+    runs-on: ubuntu-latest
+    # 最多随机等 90 分钟 + 实际停留 200 分钟 + 请求/安装缓冲。
+    timeout-minutes: 330
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24'
+      - name: 按计划执行（每日自动签到 / 手动选定模式）
+        env:
+          LINPING_ACCOUNTS: ${{ secrets.LINPING_ACCOUNTS }}
+          LINPING_TOKEN: ${{ secrets.LINPING_TOKEN }}
+          LINPING_DEVICE_ID: ${{ secrets.LINPING_DEVICE_ID }}
+          LINPING_USER_ID: ${{ vars.LINPING_USER_ID || '19426008' }}
+          MODE: ${{ inputs.mode }}
+          MAX_WAIT_MINUTES: ${{ inputs.max_wait_minutes }}
+          RANDOM_WINDOW_MINUTES: ${{ vars.RANDOM_WINDOW_MINUTES || '60' }}
+          START_AT_MS: ${{ matrix.start_at_ms }}
+          ACCOUNT_INDEX: ${{ matrix.account_index }}
+        run: node scripts/daily.mjs --account "$ACCOUNT_INDEX"

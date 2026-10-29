@@ -7,6 +7,8 @@ export const API = 'https://ya.iyunxh.com/api';
 export const STATIC = 'https://static2-ya.iyunxh.com/api';
 export const PAGE = 'https://linping.y-h5.iyunxh.com/module-page/home/home?id=621';
 export const UA = 'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36 YUNXH-YDAPP/1.0';
+export const MAX_WAIT_MINUTES = 200;
+export const CHECKPOINT_INTERVAL_MS = 60000;
 const EXPECTED_USER = 19426008;
 const EXPECTED_TENANT = 59;
 const MD5 = value => createHash('md5').update(value).digest('hex');
@@ -35,11 +37,20 @@ export function configFrom(env) {
   if (!token || /[\r\n]/.test(token)) throw new Stop('请先在 GitHub Secrets 配置 LINPING_TOKEN（仅 Token 本身）。');
   const mode = env.MODE || 'inspect';
   if (!['inspect', 'signin'].includes(mode)) throw new Stop('MODE 只能是 inspect 或 signin。');
-  const maxWait = Number(env.MAX_WAIT_MINUTES || 190);
-  if (!Number.isInteger(maxWait) || maxWait < 0 || maxWait > 200) throw new Stop('等待上限必须为 0～200 分钟。');
+  const maxWait = Number(env.MAX_WAIT_MINUTES || MAX_WAIT_MINUTES);
+  if (!Number.isInteger(maxWait) || maxWait < 0 || maxWait > MAX_WAIT_MINUTES) throw new Stop(`等待上限必须为 0～${MAX_WAIT_MINUTES} 分钟。`);
   const device = env.LINPING_DEVICE_ID?.trim();
   if (device && !/^[\w-]{1,128}$/.test(device)) throw new Stop('LINPING_DEVICE_ID 格式不正确。');
-  return {token, mode, maxWait, device};
+  const userId = expectedUserId(env.LINPING_USER_ID === undefined ? EXPECTED_USER : env.LINPING_USER_ID);
+  return {token, mode, maxWait, device, userId};
+}
+
+export function expectedUserId(value = EXPECTED_USER) {
+  if (!['string','number'].includes(typeof value) || String(value).trim() !== String(value) ||
+      !/^[1-9]\d*$/.test(String(value)) || !Number.isSafeInteger(Number(value))) {
+    throw new Stop('预期账号 ID 必须为正的安全整数。');
+  }
+  return Number(value);
 }
 
 export function signature(appid, appkey, now = Date.now(), nonce = randomUUID().replaceAll('-', '')) {
@@ -50,12 +61,13 @@ export function signature(appid, appkey, now = Date.now(), nonce = randomUUID().
   return [appid, nonce, now, MD5(appid + nonce + now + key)].join(';');
 }
 
-export function identity(data) {
-  if (Number(data?.id) !== EXPECTED_USER || Number(data?.user_id ?? data?.id) !== EXPECTED_USER || Number(data?.t_id) !== EXPECTED_TENANT) {
+export function identity(data, expected = EXPECTED_USER) {
+  expected = expectedUserId(expected);
+  if (Number(data?.id) !== expected || Number(data?.user_id ?? data?.id) !== expected || Number(data?.t_id) !== EXPECTED_TENANT) {
     throw new Stop('账号或租户与预期测试账号不一致；停止，避免操作其他账号。');
   }
   if (!Number.isSafeInteger(Number(data.gold)) || Number(data.gold) < 0) throw new Stop('金币余额格式异常。');
-  return {user_id:EXPECTED_USER, gold:Number(data.gold)};
+  return {user_id:expected, gold:Number(data.gold)};
 }
 
 export async function jsonRequest(url, options = {}, fetchImpl = fetch) {
@@ -76,7 +88,7 @@ export async function jsonRequest(url, options = {}, fetchImpl = fetch) {
 }
 
 export function ok(result, label) {
-  if (['1001','1002'].includes(String(result.code))) throw new Stop('登录失效或需要重新认证：请从 App 重新取得 H5 Token，更新 LINPING_TOKEN 后重跑。');
+  if (['1001','1002'].includes(String(result.code))) throw new Stop('登录失效或需要重新认证：请从 App 重新取得 H5 Token，更新 LINPING_TOKEN 或 LINPING_ACCOUNTS 中本账号的 token 后重跑。');
   if (String(result.code) !== '0') throw new Stop(`${label}未成功，业务码 ${safeCode(result.code)}。原始响应未记录。`);
   return result.data;
 }
@@ -109,7 +121,7 @@ export class Client {
       '/aossignin/stay_session/checkpoint','/aossignin/stay_session/status','/aossignin/ac_sub']);
     if (!allowed.has(path) || !['GET','POST'].includes(method)) throw new Stop('拒绝未列入测试范围的接口。');
     if (!this.deviceToken) throw new Stop('设备会话尚未初始化。');
-    const headers = {'Access-Token':this.config.token, 'Access-User-Id':String(EXPECTED_USER),
+    const headers = {'Access-Token':this.config.token, 'Access-User-Id':String(expectedUserId(this.config.userId)),
       'Access-T-Id':'59', 'Access-T-Id-In':'59', 'Access-Api-Unique-Token':'1',
       'Access-Wxclient-Type':'wx_app', 'Access-Api-Signature':signature(this.settings.appid,this.settings.appkey),
       'Access-Api-Dt':this.deviceToken, 'User-Agent':UA, 'Origin':new URL(PAGE).origin, 'Referer':PAGE};
@@ -156,6 +168,15 @@ export function checkRule(detail, user, now = Date.now()) {
   }
 }
 
+export function checkWaitBudget(detail, maxWait) {
+  const requiredMs = Number(detail?.rule?.submit_limit?.stay_time) * 1000;
+  if (!Number.isSafeInteger(requiredMs) || requiredMs <= 0) throw new Stop('停留规则时长异常；停止。');
+  if (!Number.isInteger(maxWait) || maxWait < 0 || maxWait * 60000 < requiredMs) {
+    throw new Stop(`等待上限不足：服务端要求至少 ${Math.ceil(requiredMs / 60000)} 分钟；不会创建注定无法完成的停留会话。`);
+  }
+  return requiredMs;
+}
+
 export function signed(data) {
   const value = data?.day_remain;
   if (value === undefined || value === null || value === '' || !Number.isSafeInteger(Number(value)) || Number(value)<0) throw new Stop('今日签到状态无法确认；停止。');
@@ -193,27 +214,27 @@ export async function eligible(client, id, maxWait, log, deps = {}) {
     const budget=deadline-clock();
     if (budget<=0) throw new Stop('达到本次等待上限，但服务端尚未确认达标；未提交签到。不跨运行伪造或补报停留时长。');
     // An actual running process waits. Never send a claimed elapsed duration.
-    await sleep(Math.min(60000, Math.max(1000,current.remaining_ms),budget));
+    await sleep(Math.min(CHECKPOINT_INTERVAL_MS, Math.max(1000,current.remaining_ms),budget));
     await checkpoint();
   }
   return current;
 }
 
-export async function submitOnce(client, id, current, log) {
+export async function submitOnce(client, id, current, log, expected = EXPECTED_USER) {
   if (signed(await client.call('/aossignin/user_times',{activity_id:id}))) {
     log('今日已有签到记录，本次不重复提交。'); return {already:true};
   }
-  const user=await client.call('/aosbase/user_info'); identity(user);
+  const user=await client.call('/aosbase/user_info'); identity(user,expected);
   const fresh=session(await client.call('/aossignin/stay_session/checkpoint',{
     activity_id:id,session_id:current.session_id,operation:'checkpoint'},'POST'),current);
   if (fresh.status!=='eligible' || fresh.server_now_ms>=fresh.expires_at_ms) throw new Stop('提交前服务端资格尚未达标或已到期；未提交。');
-  const before=identity(user).gold;
+  const before=identity(user,expected).gold;
   // Exactly one mutation attempt. A timeout or rejection is NEVER retried.
   await client.call('/aossignin/ac_sub',{id,stay_session_id:fresh.session_id,
     afs_tokenid:'',collect_info:'',longitude:0,latitude:0},'POST');
   log('签到接口返回成功；正在核对今日记录和余额（不再提交）。');
   const confirmed=signed(await client.call('/aossignin/user_times',{activity_id:id}));
-  const after=identity(await client.call('/aosbase/user_info')).gold;
+  const after=identity(await client.call('/aosbase/user_info'),expected).gold;
   if (!confirmed) throw new Stop('签到接口返回成功，但今日记录尚未确认；请人工核对，勿立即重跑。');
   log(`今日签到记录已确认。金币：${before} → ${after}，变化 ${after-before}。余额变化不单独作为签到成功证据。`);
   return {confirmed,before,after};
@@ -225,19 +246,22 @@ export async function run(config, deps = {}) {
   const client=deps.client||new Client(config,settings,fetchImpl);
   await client.initDevice();
   const rawUser=await client.call('/aosbase/user_info');
-  const user=identity(rawUser);
+  const user=identity(rawUser,config.userId);
   log(`测试账号验证通过：${user.user_id}；当前金币 ${user.gold}。`);
   const detail=await activity(fetchImpl);
   log(`页面 621 对应签到活动 ${detail.id}；停留规则 ${Number(detail.rule.submit_limit?.stay_time)||0} 秒。`);
   if (signed(await client.call('/aossignin/user_times',{activity_id:detail.id}))) { log('今日已签到，未创建新会话，也未重复提交。'); return; }
   if (config.mode==='inspect') { log('检查完成。inspect 不创建停留会话，不提交签到。选择 signin 才会真实等待并尝试签到。'); return; }
   checkRule(detail,rawUser);
+  checkWaitBudget(detail,config.maxWait);
   const current=await eligible(client,detail.id,config.maxWait,log,deps);
   // Configuration may have changed while waiting several hours.
   const latest=await activity(fetchImpl);
   if (latest.id!==detail.id) throw new Stop('等待期间页面活动发生变化；停止。');
-  checkRule(latest,await client.call('/aosbase/user_info'));
-  await submitOnce(client,detail.id,current,log);
+  const latestUser=await client.call('/aosbase/user_info');
+  identity(latestUser,config.userId);
+  checkRule(latest,latestUser);
+  await submitOnce(client,detail.id,current,log,config.userId);
 }
 
 async function main() {

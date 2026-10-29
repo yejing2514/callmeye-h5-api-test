@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
 import {readFile} from 'node:fs/promises';
 import {API,STATIC,UA,Stop,configFrom,signature,identity,jsonRequest,ok,tenant,Client,
-  activityFromPage,checkRule,signed,session,eligible,submitOnce,run,safeCode} from '../scripts/linping.mjs';
+  activityFromPage,checkRule,checkWaitBudget,signed,session,eligible,submitOnce,run,safeCode,
+  MAX_WAIT_MINUTES,CHECKPOINT_INTERVAL_MS} from '../scripts/linping.mjs';
 
 const user={id:19426008,user_id:19426008,t_id:59,gold:180};
 const config={token:'offline-test-token',mode:'inspect',maxWait:1};
@@ -22,9 +23,14 @@ test('Token missing or multiline stops before requests',()=>{
   assert.equal(configFrom({LINPING_TOKEN:' test '}).token,'test');
 });
 test('invalid mode and wait limits rejected',()=>{
-  for(const x of ['-1','201','NaN','1.5']) assert.throws(()=>configFrom({LINPING_TOKEN:'test',MAX_WAIT_MINUTES:x}),Stop);
+  for(const x of ['-1',String(MAX_WAIT_MINUTES+1),'NaN','1.5']) assert.throws(()=>configFrom({LINPING_TOKEN:'test',MAX_WAIT_MINUTES:x}),Stop);
   assert.equal(configFrom({LINPING_TOKEN:'test',MAX_WAIT_MINUTES:'0'}).maxWait,0);
   assert.throws(()=>configFrom({LINPING_TOKEN:'test',MODE:'anything'}),Stop);
+});
+test('wait budget is checked before a new stay session is created',()=>{
+  assert.equal(checkWaitBudget(rule(),200),10800000);
+  assert.throws(()=>checkWaitBudget(rule(),179),/等待上限不足/);
+  assert.equal(CHECKPOINT_INTERVAL_MS,60000);
 });
 test('signature exactly matches the H5 transformation',()=>{
   const md5=x=>createHash('md5').update(x).digest('hex');
@@ -197,10 +203,20 @@ test('inspect is read-only for user activity: no stay session, no reward',async(
   assert.deepEqual(paths,['/aosbase/user_info','/aossignin/user_times']);
   assert.ok(logs.some(x=>x.includes('inspect')));assert.ok(logs.every(x=>!x.includes(config.token)));
 });
-test('workflow secrets isolated from tests, schedules gated, writes forbidden',async()=>{
+test('workflow runs real daily jobs with secret-free matrix and preserves manual modes',async()=>{
   const yaml=await readFile(new URL('../.github/workflows/linping.yml',import.meta.url),'utf8');
-  assert.match(yaml,/ENABLE_SCHEDULE == 'true'/);
+  assert.match(yaml,/schedule:/);
   assert.match(yaml,/contents: read/);assert.match(yaml,/cancel-in-progress: false/);
   assert.match(yaml,/secrets\.LINPING_TOKEN/);assert.doesNotMatch(yaml,/pull_request_target|contents: write/);
-  assert.ok(yaml.indexOf('node --test')<yaml.indexOf('secrets.LINPING_TOKEN'));
+  assert.match(yaml,/cron: '20 1 \* \* \*'/);
+  assert.match(yaml,/secrets\.LINPING_ACCOUNTS/);
+  assert.match(yaml,/MAX_WAIT_MINUTES: \$\{\{ inputs\.max_wait_minutes \}\}/);
+  assert.ok(yaml.indexOf('node --test')<yaml.indexOf('id: plan'));
+  assert.match(yaml,/needs: prepare/);
+  assert.match(yaml,/matrix: \$\{\{ fromJSON\(needs\.prepare\.outputs\.matrix\) \}\}/);
+  assert.match(yaml,/fail-fast: false/);
+  assert.match(yaml,/max-parallel: 3/);
+  assert.match(yaml,/timeout-minutes: 330/);
+  assert.match(yaml,/node scripts\/daily\.mjs --account/);
+  assert.doesNotMatch(yaml,/if: github\.event_name == 'workflow_dispatch'|ENABLE_SCHEDULE/);
 });

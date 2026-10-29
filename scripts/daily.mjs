@@ -2,7 +2,7 @@ import {randomInt} from 'node:crypto';
 import {appendFile} from 'node:fs/promises';
 import {performance} from 'node:perf_hooks';
 import {pathToFileURL} from 'node:url';
-import {Stop, configFrom, run} from './linping.mjs';
+import {Stop, configFrom, expectedUserId, tokenIdentity, testDeviceId, run} from './linping.mjs';
 
 export const MAX_ACCOUNTS = 10;
 export const MAX_RANDOM_WINDOW_MINUTES = 90;
@@ -22,12 +22,19 @@ export function accountsFrom(env) {
   return entries.map(entry => {
     if (!entry || typeof entry !== 'object' || Array.isArray(entry) ||
         Object.keys(entry).some(key => !['user_id','token','device_id'].includes(key)) ||
-        !['string','number'].includes(typeof entry.user_id) || typeof entry.token !== 'string' ||
-        typeof entry.device_id !== 'string' || !entry.device_id.trim()) {
-      throw new Stop('多账号条目必须且只能包含 user_id、token、device_id；设备标识请使用各账号获授权测试设备的固定值。');
+        typeof entry.token !== 'string' || !entry.token.trim() ||
+        (Object.hasOwn(entry,'user_id') && !['string','number'].includes(typeof entry.user_id)) ||
+        (Object.hasOwn(entry,'device_id') && (typeof entry.device_id !== 'string' || !entry.device_id.trim()))) {
+      throw new Stop('多账号条目须包含非空 token；user_id、device_id 可省略，其他字段不支持。');
     }
-    const config = configFrom({...env, LINPING_TOKEN:entry.token, LINPING_USER_ID:entry.user_id,
-      LINPING_DEVICE_ID:entry.device_id});
+    // Opaque tokens remain supported with an explicit user_id (legacy config).
+    // The observed format is also cross-checked against any explicit ID.
+    const explicitUser = Object.hasOwn(entry,'user_id');
+    const claims = !explicitUser || /^[a-f\d]{32}/i.test(entry.token.trim()) ? tokenIdentity(entry.token) : undefined;
+    const userId = explicitUser ? expectedUserId(entry.user_id) : claims.userId;
+    if (claims && claims.userId !== userId) throw new Stop('配置的 user_id 与 Token 内账号不一致；未发送请求。');
+    const config = configFrom({...env, LINPING_TOKEN:entry.token, LINPING_USER_ID:userId,
+      LINPING_DEVICE_ID:entry.device_id ?? testDeviceId(userId)});
     if (users.has(config.userId) || tokens.has(config.token) || devices.has(config.device)) {
       throw new Stop('多账号配置中存在重复账号、Token 或设备标识；停止，避免重复提交或混用身份。');
     }

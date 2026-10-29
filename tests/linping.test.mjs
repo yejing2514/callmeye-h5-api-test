@@ -80,6 +80,37 @@ test('device token and fresh headers follow the H5',async()=>{
   assert.equal(requests[1].opt.headers['Access-Token'],config.token);
   assert.match(requests[1].opt.headers['Access-Api-Signature'],/^linping;[^;]+;\d+;[a-f0-9]{32}$/);
 });
+test('all eight captured business headers supported; signatures refreshed per request',async()=>{
+  const requests=[];
+  const client=new Client({...config,userId:19426009,device:'fixed-offline-client'},settings,async(url,opt)=>{
+    requests.push({url,opt});return url.endsWith('_auth_dt')?reply('a'.repeat(32)+'b'.repeat(32)):reply({});
+  });
+  await client.initDevice(); await client.call('/aosbase/user_info'); await client.call('/aosbase/user_info');
+  const headers=requests[1].opt.headers;
+  const expected={'Access-Token':config.token,'Access-User-Id':'19426009','Access-T-Id':'59',
+    'Access-T-Id-In':'59','Access-Api-Unique-Token':'1','Access-Wxclient-Type':'wx_app',
+    'Access-Api-Dt':'b'.repeat(32)};
+  for(const [name,value] of Object.entries(expected)) assert.equal(headers[name],value,name);
+  assert.match(headers['Access-Api-Signature'],/^linping;[^;]+;\d+;[a-f0-9]{32}$/);
+  assert.notEqual(headers['Access-Api-Signature'],requests[2].opt.headers['Access-Api-Signature']);
+  for(const request of requests) {
+    assert.equal(request.opt.headers['User-Agent'],UA);
+    assert.equal(request.opt.headers.Origin,'https://linping.y-h5.iyunxh.com');
+    assert.equal(request.opt.headers.Referer,'https://linping.y-h5.iyunxh.com/module-page/home/home?id=621');
+  }
+  const init=requests[0].opt.headers;
+  assert.equal(init['Access-Api-Dt'],'fixed-offline-client');
+  assert.equal(init['Access-Token'],undefined);assert.equal(init['Access-Api-Signature'],undefined);
+});
+test('H5 device extraction supports observed 32 and 36 character tokens, not only 36',async()=>{
+  for(const size of [32,36]) {
+    const client=new Client(config,settings,async()=>reply('a'.repeat(32)+'b'.repeat(size)));
+    await client.initDevice();assert.equal(client.deviceToken,'b'.repeat(size));
+  }
+  for(const value of ['a'.repeat(63),'a'.repeat(65),'a'.repeat(67),'a'.repeat(32)+'\r'.repeat(32)]) {
+    await assert.rejects(new Client(config,settings,async()=>reply(value)).initDevice(),Stop);
+  }
+});
 test('client rejects extra endpoints',async()=>{
   const client=new Client(config,settings);client.deviceToken='test';
   await assert.rejects(client.call('/withdraw'),Stop);

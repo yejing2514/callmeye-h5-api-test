@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {Stop,configFrom,identity,Client,run,submitOnce} from '../scripts/linping.mjs';
+import {Stop,configFrom,identity,tokenIdentity,testDeviceId,Client,run,submitOnce} from '../scripts/linping.mjs';
 import {MAX_ACCOUNTS,accountsFrom,executionEnv,randomWindow,planFrom,waitForStart,executeAccount} from '../scripts/daily.mjs';
 
 const entries = [
@@ -9,6 +9,11 @@ const entries = [
 ];
 const envFor = (accounts = entries) => ({LINPING_ACCOUNTS:JSON.stringify(accounts),MODE:'inspect'});
 const now = Date.parse('2026-10-29T01:20:00Z');
+// Synthetic, deliberately unsigned tokens. Never use real account credentials.
+const envelope = query => '0'.repeat(32) + Buffer.from(query).toString('base64');
+const tokenFor = (id, changes = {}) => envelope(new URLSearchParams({exp:'1803172795',iat:'1793172795',
+  'data[t_id]':'59','data[t_id_in]':'59','data[user_id]':String(id),
+  'data[user_name]':'offline_test_only',...changes}).toString());
 
 test('legacy single-account configuration and default ID remain compatible',()=>{
   const [config] = accountsFrom({LINPING_TOKEN:' offline-token ',MODE:'signin',MAX_WAIT_MINUTES:'200'});
@@ -44,7 +49,7 @@ test('malformed, empty, oversized or misspelled multi-account configs fail close
       error=>error instanceof Stop && !error.message.includes('private-invalid-json'));
   }
   const invalid = [{...entries[0],token:1},{...entries[0],token:'a\nb'},
-    {...entries[0],device_id:''},{...entries[0],device_id:undefined},
+    {...entries[0],device_id:''},{...entries[0],device_id:null},{...entries[0],device_id:1},
     {...entries[0],user_id:null},{...entries[0],token_typo:'secret'}];
   for (const entry of invalid) assert.throws(()=>accountsFrom(envFor([entry])),Stop);
 });
@@ -53,6 +58,98 @@ test('duplicate identities, tokens or device IDs are rejected before requests',(
   for (const field of ['user_id','token','device_id']) {
     assert.throws(()=>accountsFrom(envFor([entries[0],{...entries[1],[field]:entries[0][field]}])),/重复/);
   }
+});
+
+test('observed token format yields only user and tenant claims, never credentials or profile fields',()=>{
+  const claims=tokenIdentity(tokenFor(19426009));
+  assert.deepEqual(claims,{userId:19426009,tenantId:59,tenantIdIn:59});
+  assert.ok(!JSON.stringify(claims).includes('offline_test_only'));
+  assert.deepEqual(tokenIdentity(' '+tokenFor(19426009)+' '),claims);
+  assert.deepEqual(tokenIdentity(tokenFor(19426009).replace(/=+$/,'')),claims);
+});
+
+test('token-only multi-account JSON resolves IDs and stable isolated client identifiers',()=>{
+  const accounts=accountsFrom(envFor([{token:tokenFor(19426008)},{token:tokenFor(19426009)}]));
+  assert.deepEqual(accounts.map(config=>config.userId),[19426008,19426009]);
+  assert.notEqual(accounts[0].device,accounts[1].device);
+  accounts.forEach(config=>{
+    assert.match(config.device,/^[a-f0-9]{32}$/);
+    assert.equal(config.device,testDeviceId(config.userId));
+  });
+});
+
+test('renewal and array reordering preserve each account automatic device identifier',()=>{
+  const before=accountsFrom(envFor([{token:tokenFor(19426008)},{token:tokenFor(19426009)}]));
+  const after=accountsFrom(envFor([{token:tokenFor(19426009,{exp:'1809999999'})},
+    {token:tokenFor(19426008,{exp:'1809999999'})}]));
+  assert.notEqual(before[0].token,after[1].token);
+  assert.equal(before[0].device,after[1].device);
+  assert.equal(before[1].device,after[0].device);
+});
+
+test('token-only credentials never inherit old single-account user or device settings',()=>{
+  const [account]=accountsFrom({...envFor([{token:tokenFor(12345)}]),LINPING_USER_ID:'19426008',
+    LINPING_DEVICE_ID:'legacy-device',LINPING_TOKEN:'legacy-token'});
+  assert.equal(account.userId,12345);assert.equal(account.device,testDeviceId(12345));
+  assert.equal(account.token,tokenFor(12345));
+});
+
+test('legacy entries and partial optional overrides remain compatible',()=>{
+  const configs=accountsFrom(envFor([
+    entries[0],
+    {token:tokenFor(19426009)},
+    {token:tokenFor(12345),device_id:'fixed-authorized-device'},
+    {token:'opaque-offline-token',user_id:54321}
+  ]));
+  assert.equal(configs[0].device,entries[0].device_id);
+  assert.equal(configs[1].device,testDeviceId(19426009));
+  assert.equal(configs[2].device,'fixed-authorized-device');
+  assert.equal(configs[3].device,testDeviceId(54321));
+});
+
+test('unknown token envelope or wrong tenant never guesses an account or falls back',()=>{
+  for(const token of ['private-opaque-token',tokenFor(1,{'data[t_id]':'60'}),
+    tokenFor(1,{'data[t_id_in]':'60'}),tokenFor(1,{'data[user_id]':'NaN'}),
+    tokenFor(1,{'data[user_id]':'9007199254740992'}),tokenFor(1,{'data[user_id]':'0'})]) {
+    assert.throws(()=>accountsFrom({...envFor([{token}]),LINPING_TOKEN:'legacy'}),
+      error=>error instanceof Stop && !error.message.includes(token));
+  }
+});
+
+test('malformed Base64, invalid UTF-8, missing or duplicate claims fail safely',()=>{
+  const bad=[
+    '0'.repeat(32)+'A',
+    '0'.repeat(32)+'AB==',
+    '0'.repeat(32)+Buffer.from([255,254]).toString('base64'),
+    tokenFor(1).slice(0,34)+'!'+tokenFor(1).slice(35),
+    envelope('data%5Bt_id%5D=59&data%5Bt_id_in%5D=59'),
+    envelope('data%5Buser_id%5D=1&data%5Bt_id%5D=59'),
+    envelope('data[user_id]=1&data%5Buser_id%5D=2&data[t_id]=59&data[t_id_in]=59'),
+    envelope('data[user_id]=1&data[t_id]=59&data%5Bt_id%5D=60&data[t_id_in]=59'),
+    envelope('data[user_id]=1%0A&data[t_id]=59&data[t_id_in]=59'),
+    '0'.repeat(16385)
+  ];
+  for(const token of bad) assert.throws(()=>tokenIdentity(token),Stop);
+});
+
+test('explicit user ID cannot override conflicting claims in an observed token',()=>{
+  assert.throws(()=>accountsFrom(envFor([{token:tokenFor(19426009),user_id:19426008}])),/不一致/);
+  assert.equal(accountsFrom(envFor([{token:tokenFor(19426009),user_id:'19426009'}]))[0].userId,19426009);
+});
+
+test('same account with different tokens is rejected before running, including auto devices',()=>{
+  assert.throws(()=>accountsFrom(envFor([{token:tokenFor(19426009)},
+    {token:tokenFor(19426009,{exp:'1809999999'})}])),/重复/);
+});
+
+test('token-only plan and execution expose no claims or generated device IDs in matrix',async()=>{
+  const env={...envFor([{token:tokenFor(19426009)}]),GITHUB_EVENT_NAME:'schedule'};
+  const plan=planFrom(env,{now:()=>now,randomInt:()=>0});
+  assert.deepEqual(plan,{include:[{account_index:0,start_at_ms:now}]});
+  await executeAccount({...env,START_AT_MS:String(now)},0,{now:()=>now,log:()=>{},run:async config=>{
+    assert.equal(config.userId,19426009); assert.equal(config.device,testDeviceId(19426009));
+    assert.equal(config.mode,'signin');
+  }});
 });
 
 test('daily event selects real signin and a 200 minute wait, manual selection is preserved',()=>{
@@ -149,7 +246,7 @@ test('non-default account is verified again during submit and confirmation',asyn
 });
 
 test('full signin flow accepts the selected account and submits only once after real waiting',async()=>{
-  const account=accountsFrom({...envFor(),MODE:'signin',MAX_WAIT_MINUTES:'1'})[1];
+  const account=accountsFrom({...envFor([{token:tokenFor(19426008)},{token:tokenFor(19426009)}]),MODE:'signin',MAX_WAIT_MINUTES:'1'})[1];
   const user={id:account.userId,user_id:account.userId,t_id:59,gold:5};
   const detail={id:123,t_id:59,start_time:1,end_time:9999999999,
     rule:JSON.stringify({submit_limit:{open_stay_time:1,stay_time:1},prevent_cheat:{area_limit:{}}}),other_set:'{}'};
@@ -167,6 +264,31 @@ test('full signin flow accepts the selected account and submits only once after 
   }};
   await run(account,{client,fetch,clock:()=>elapsed,sleep:async ms=>{elapsed+=ms;},log:()=>{}});
   assert.equal(elapsed,1000);assert.equal(submits,1);
+});
+
+test('decoded claims do not authenticate: server identity mismatch creates no stay session or reward',async()=>{
+  const [account]=accountsFrom({...envFor([{token:tokenFor(19426009)}]),MODE:'signin'});
+  const paths=[];
+  const client={initDevice:async()=>{},call:async path=>{
+    paths.push(path);return {id:19426008,user_id:19426008,t_id:59,gold:5};
+  }};
+  const fetch=async()=>({ok:true,status:200,json:async()=>({code:'0',data:{appid:'linping',appkey:'offline',t_id:59,t_id_in:59}})});
+  await assert.rejects(run(account,{fetch,client,log:()=>{}}),/账号/);
+  assert.deepEqual(paths,['/aosbase/user_info']);
+});
+
+test('unverified or expired token rejected by server never causes a reward attempt',async()=>{
+  const [account]=accountsFrom({...envFor([{token:tokenFor(19426009,{exp:'1'})}]),MODE:'signin'});
+  const paths=[];
+  const fetch=async(url,opt)=>{
+    paths.push(url);
+    return {ok:true,status:200,json:async()=>({code:url.endsWith('user_info')?'1001':'0',data:
+      url.includes('_auth_h5init')?{appid:'linping',appkey:'offline',t_id:59,t_id_in:59}:
+        url.endsWith('_auth_dt')?'a'.repeat(32)+'b'.repeat(32):{}})};
+  };
+  await assert.rejects(run(account,{fetch,log:()=>{}}),/登录失效/);
+  assert.equal(paths.length,3);
+  assert.ok(paths.every(path=>!path.includes('stay_session') && !path.includes('ac_sub')));
 });
 
 test('one account failure does not mutate or disable another account',async()=>{

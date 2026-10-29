@@ -53,6 +53,40 @@ export function expectedUserId(value = EXPECTED_USER) {
   return Number(value);
 }
 
+// Observed H5 token envelope: 32 hexadecimal characters + Base64 query string.
+// Decoding is NOT signature verification. user_info must confirm these claims
+// before creating a stay session, and again immediately before reward submission.
+export function tokenIdentity(token) {
+  const invalid = () => new Stop('无法从 Token 识别用户和租户；请提供完整 H5 Access-Token，或使用原 user_id 显式配置。不会猜测账号。');
+  if (typeof token !== 'string' || token.length > 16384) throw invalid();
+  const match = /^[a-f\d]{32}([A-Za-z0-9+/]+={0,2})$/i.exec(token.trim());
+  if (!match) throw invalid();
+  let params;
+  try {
+    const bytes = Buffer.from(match[1], 'base64');
+    const canonical = bytes.toString('base64');
+    if (match[1].includes('=') ? canonical !== match[1] : canonical.replace(/=+$/,'') !== match[1]) throw invalid();
+    const query = new TextDecoder('utf-8', {fatal:true}).decode(bytes);
+    params = new URLSearchParams(query);
+  } catch { throw invalid(); }
+  const field = name => {
+    const values = params.getAll(`data[${name}]`);
+    if (values.length !== 1 || !/^[1-9]\d*$/.test(values[0]) || values[0].trim() !== values[0]) throw invalid();
+    return expectedUserId(values[0]);
+  };
+  const userId = field('user_id'), tenantId = field('t_id'), tenantIdIn = field('t_id_in');
+  if (tenantId !== EXPECTED_TENANT || tenantIdIn !== EXPECTED_TENANT) {
+    throw new Stop('Token 租户与悦临平测试租户不一致；未发送请求。');
+  }
+  return {userId, tenantId, tenantIdIn};
+}
+
+// A stable TEST CLIENT identifier, not the App's physical device ID, not a
+// credential and not a device-policy bypass. Token renewal keeps the same ID.
+export function testDeviceId(userId) {
+  return createHash('sha256').update(`linping-h5-api-test:device:v1:59:${expectedUserId(userId)}`).digest('hex').slice(0,32);
+}
+
 export function signature(appid, appkey, now = Date.now(), nonce = randomUUID().replaceAll('-', '')) {
   if (appid !== 'linping' || typeof appkey !== 'string' || !appkey) throw new Stop('租户签名配置不符合预期。');
   const even = [], odd = [];
@@ -109,12 +143,18 @@ export class Client {
     this.deviceToken = null;
   }
   async initDevice() {
+    this.deviceToken = null;
     const headers = {'Access-T-Id':'59','Access-T-Id-In':'59','Access-Api-Unique-Token':'1',
-      'Access-Api-Dt':this.config.device || randomUUID(), 'User-Agent':UA};
+      'Access-Api-Dt':this.config.device || randomUUID(), 'User-Agent':UA,
+      'Origin':new URL(PAGE).origin, 'Referer':PAGE};
     const value = ok(await jsonRequest(`${API}/aosbase/_auth_dt`, {headers}, this.fetchImpl), '设备会话初始化');
-    if (typeof value !== 'string' || value.length < 68) throw new Stop('设备会话格式发生变化；停止。');
+    if (typeof value !== 'string' || value.length < 64) throw new Stop('设备会话格式发生变化；停止。');
     // Same extraction as the H5 filterDeviceToken(). Not an App credential refresh.
-    this.deviceToken = value.slice(32, 68);
+    const deviceToken = value.slice(32, 68);
+    if (![32,36].includes(deviceToken.length) || !/^[\w-]+$/.test(deviceToken)) {
+      throw new Stop('设备会话格式发生变化；停止。');
+    }
+    this.deviceToken = deviceToken;
   }
   async call(path, data = {}, method = 'GET') {
     const allowed = new Set(['/aosbase/user_info','/aossignin/user_times','/aossignin/stay_session',

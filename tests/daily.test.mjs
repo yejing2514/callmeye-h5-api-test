@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {Stop,configFrom,identity,tokenIdentity,testDeviceId,Client,run,submitOnce} from '../scripts/callmeye.mjs';
-import {MAX_ACCOUNTS,accountsFrom,executionEnv,randomWindow,planFrom,waitForStart,executeAccount} from '../scripts/daily.mjs';
+import {MAX_ACCOUNTS,MAX_REMARK_LENGTH,accountsFrom,executionEnv,randomWindow,planFrom,waitForStart,executeAccount} from '../scripts/daily.mjs';
 
 const entries = [
   {user_id:19426008,token:'offline-token-one',device_id:'authorized-test-device-one'},
@@ -52,6 +52,18 @@ test('malformed, empty, oversized or misspelled multi-account configs fail close
     {...entries[0],device_id:''},{...entries[0],device_id:null},{...entries[0],device_id:1},
     {...entries[0],user_id:null},{...entries[0],token_typo:'secret'}];
   for (const entry of invalid) assert.throws(()=>accountsFrom(envFor([entry])),Stop);
+});
+
+test('optional remark labels stay local: accepted for readability, never propagated',()=>{
+  const label = '离线自测账号';
+  const [config] = accountsFrom(envFor([{...entries[0],remark:label}]));
+  assert.deepEqual(Object.keys(config).sort(),['device','maxWait','mode','token','userId']);
+  assert.ok(!JSON.stringify(config).includes(label));
+  assert.equal(accountsFrom(envFor([{token:tokenFor(19426008),remark:''}])).length,1);
+  assert.equal(accountsFrom(envFor([{token:tokenFor(19426009),remark:'x'.repeat(MAX_REMARK_LENGTH)}])).length,1);
+  for (const remark of [1,null,true,{},[],'x'.repeat(MAX_REMARK_LENGTH+1),'line\nbreak','tab\there']) {
+    assert.throws(()=>accountsFrom(envFor([{token:tokenFor(19426008),remark}])),Stop);
+  }
 });
 
 test('duplicate identities, tokens or device IDs are rejected before requests',()=>{

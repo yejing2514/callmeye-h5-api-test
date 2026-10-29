@@ -6,6 +6,10 @@ import {Stop, configFrom, expectedUserId, tokenIdentity, testDeviceId, run} from
 
 export const MAX_ACCOUNTS = 10;
 export const MAX_RANDOM_WINDOW_MINUTES = 90;
+// A purely local label for whoever edits LINPING_ACCOUNTS. It is validated and
+// then discarded: it never enters requests, plans, logs or step summaries.
+export const MAX_REMARK_LENGTH = 64;
+const CONTROL_CHARS = /[\u0000-\u001F\u007F]/;
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 // Only the numeric index and planned start time may leave the planner job.
@@ -21,11 +25,13 @@ export function accountsFrom(env) {
   const users = new Set(), tokens = new Set(), devices = new Set();
   return entries.map(entry => {
     if (!entry || typeof entry !== 'object' || Array.isArray(entry) ||
-        Object.keys(entry).some(key => !['user_id','token','device_id'].includes(key)) ||
+        Object.keys(entry).some(key => !['user_id','token','device_id','remark'].includes(key)) ||
         typeof entry.token !== 'string' || !entry.token.trim() ||
         (Object.hasOwn(entry,'user_id') && !['string','number'].includes(typeof entry.user_id)) ||
+        (Object.hasOwn(entry,'remark') && (typeof entry.remark !== 'string' ||
+          entry.remark.length > MAX_REMARK_LENGTH || CONTROL_CHARS.test(entry.remark))) ||
         (Object.hasOwn(entry,'device_id') && (typeof entry.device_id !== 'string' || !entry.device_id.trim()))) {
-      throw new Stop('多账号条目须包含非空 token；user_id、device_id 可省略，其他字段不支持。');
+      throw new Stop('多账号条目须包含非空 token；user_id、device_id、remark 可省略，其他字段不支持。');
     }
     // Opaque tokens remain supported with an explicit user_id (legacy config).
     // The observed format is also cross-checked against any explicit ID.

@@ -5,3 +5,4 @@ node_modules/
 *.har
 *.log
 *token*.json
+*.md

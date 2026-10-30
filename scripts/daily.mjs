@@ -56,7 +56,7 @@ export function executionEnv(env) {
 }
 
 export function randomWindow(env) {
-  const value = env.RANDOM_WINDOW_MINUTES?.trim() || '60';
+  const value = env.RANDOM_WINDOW_MINUTES?.trim() || '10';
   if (!/^\d+$/.test(value) || !Number.isInteger(Number(value)) || Number(value) > MAX_RANDOM_WINDOW_MINUTES) {
     throw new Stop(`RANDOM_WINDOW_MINUTES 必须为 0～${MAX_RANDOM_WINDOW_MINUTES} 的整数。`);
   }

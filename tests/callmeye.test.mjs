@@ -239,7 +239,8 @@ test('workflow runs real daily jobs with secret-free matrix and preserves manual
   assert.match(yaml,/schedule:/);
   assert.match(yaml,/contents: read/);assert.match(yaml,/cancel-in-progress: false/);
   assert.match(yaml,/secrets\.LINPING_TOKEN/);assert.doesNotMatch(yaml,/pull_request_target|contents: write/);
-  assert.match(yaml,/cron: '20 1 \* \* \*'/);
+  assert.match(yaml,/cron: '20 23 \* \* \*'/);
+  assert.equal((yaml.match(/RANDOM_WINDOW_MINUTES: \$\{\{ vars\.RANDOM_WINDOW_MINUTES \|\| '10' \}\}/g)||[]).length,2);
   assert.match(yaml,/secrets\.LINPING_ACCOUNTS/);
   assert.match(yaml,/MAX_WAIT_MINUTES: \$\{\{ inputs\.max_wait_minutes \}\}/);
   assert.ok(yaml.indexOf('node --test')<yaml.indexOf('id: plan'));

@@ -16,10 +16,10 @@ on:
         required: true
         default: '200'
         type: string
-  # UTC 01:20，即北京时间 09:20；每个账号另外随机延迟 0～60 分钟。
+  # UTC 23:20，即次日北京时间 07:20；每个账号另外随机延迟 0～10 分钟。
   # 随机窗口可用仓库变量 RANDOM_WINDOW_MINUTES 修改（0～90）。GitHub 可能延迟。
   schedule:
-    - cron: '20 1 * * *'
+    - cron: '20 23 * * *'
 
 permissions:
   contents: read
@@ -55,7 +55,7 @@ jobs:
           LINPING_USER_ID: ${{ vars.LINPING_USER_ID || '19426008' }}
           MODE: ${{ inputs.mode }}
           MAX_WAIT_MINUTES: ${{ inputs.max_wait_minutes }}
-          RANDOM_WINDOW_MINUTES: ${{ vars.RANDOM_WINDOW_MINUTES || '60' }}
+          RANDOM_WINDOW_MINUTES: ${{ vars.RANDOM_WINDOW_MINUTES || '10' }}
         run: node scripts/daily.mjs --plan
 
   signin:
@@ -86,7 +86,7 @@ jobs:
           LINPING_USER_ID: ${{ vars.LINPING_USER_ID || '19426008' }}
           MODE: ${{ inputs.mode }}
           MAX_WAIT_MINUTES: ${{ inputs.max_wait_minutes }}
-          RANDOM_WINDOW_MINUTES: ${{ vars.RANDOM_WINDOW_MINUTES || '60' }}
+          RANDOM_WINDOW_MINUTES: ${{ vars.RANDOM_WINDOW_MINUTES || '10' }}
           # "<索引>:<计划时间戳>"，计划时间与 Index 一并来自矩阵维度本身。
           ACCOUNT_SLOT: ${{ matrix.slot }}
         run: node scripts/daily.mjs --account "$ACCOUNT_SLOT"

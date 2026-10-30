@@ -191,8 +191,10 @@ test('daily event selects real signin and a 200 minute wait, manual selection is
   assert.ok(accountsFrom(manual).every(config=>config.mode==='inspect' && config.maxWait===0));
 });
 
-test('random window defaults to 60, supports disabling and rejects over-timeout inputs',()=>{
-  assert.equal(randomWindow({}),60); assert.equal(randomWindow({RANDOM_WINDOW_MINUTES:'0'}),0);
+test('random window defaults to 10, supports overriding and disabling, and rejects over-timeout inputs',()=>{
+  for (const value of [undefined,'','  ']) assert.equal(randomWindow({RANDOM_WINDOW_MINUTES:value}),10);
+  assert.equal(randomWindow({RANDOM_WINDOW_MINUTES:'0'}),0);
+  assert.equal(randomWindow({RANDOM_WINDOW_MINUTES:'20'}),20);
   assert.equal(randomWindow({RANDOM_WINDOW_MINUTES:'90'}),90);
   for (const value of ['91','-1','NaN','1.5','Infinity']) assert.throws(()=>randomWindow({RANDOM_WINDOW_MINUTES:value}),Stop);
 });
@@ -200,11 +202,11 @@ test('random window defaults to 60, supports disabling and rejects over-timeout 
 test('daily plan independently samples accounts, exports only indices and numeric times',()=>{
   let calls = 0;
   const plan = planFrom({...envFor(),GITHUB_EVENT_NAME:'schedule'},
-    {now:()=>now,randomInt:(min,max)=>{assert.equal(min,0); assert.equal(max,3600001); return calls++ ? max-1 : 0;}});
-  assert.deepEqual(plan,{slots:[`0:${now}`,`1:${now+3600000}`]});
+    {now:()=>now,randomInt:(min,max)=>{assert.equal(min,0); assert.equal(max,600001); return calls++ ? max-1 : 0;}});
+  assert.deepEqual(plan,{slots:[`0:${now}`,`1:${now+600000}`]});
   const output = JSON.stringify(plan);
   for (const entry of entries) for (const value of Object.values(entry)) assert.ok(!output.includes(String(value)));
-  assert.throws(()=>planFrom({...envFor(),GITHUB_EVENT_NAME:'schedule'},{now:()=>now,randomInt:()=>3600001}),Stop);
+  assert.throws(()=>planFrom({...envFor(),GITHUB_EVENT_NAME:'schedule'},{now:()=>now,randomInt:()=>600001}),Stop);
 });
 
 test('manual planning never delays or samples randomness',()=>{
@@ -232,7 +234,7 @@ test('scheduled waiting happens before business requests, and does not count as 
 test('late same-day start is immediate; cross-day or unbounded plans stop',async()=>{
   const env = {GITHUB_EVENT_NAME:'schedule'};
   await waitForStart(now-1000,env,()=>{},{now:()=>now,sleep:()=>{throw new Error('must not sleep');}});
-  for (const target of [undefined,'invalid','0',String(now+3600001),String(now-86400000)]) {
+  for (const target of [undefined,'invalid','0',String(now+600001),String(now-86400000)]) {
     await assert.rejects(waitForStart(target,env,()=>{},{now:()=>now}),Stop);
   }
 });

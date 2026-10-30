@@ -1,15 +1,15 @@
 name: 临时定时诊断（不签到）
 
 # Temporary probe for 2026-10-30 only. Remove after collecting schedule evidence.
-# UTC 01:50 / 02:05 / 02:20 = Beijing 09:50 / 10:05 / 10:20.
+# Recovery probe after manually disabling and re-enabling this workflow.
+# UTC 07:05 / 07:20 / 07:35 = Beijing 15:05 / 15:20 / 15:35.
 # Cron has no year field; the step below prevents future-year probes.
 on:
   push:
     branches: [main]
     paths: [.github/workflows/schedule-diagnostic.yml]
   schedule:
-    - cron: '50 1 30 10 *'
-    - cron: '5,20 2 30 10 *'
+    - cron: '5,20,35 7 30 10 *'
 
 permissions: {}
 

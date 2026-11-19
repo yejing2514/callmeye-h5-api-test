@@ -122,15 +122,49 @@ test('1022 full flow waits three actual simulated hours then submits exactly onc
     afs_tokenid:'',collect_info:'',longitude:0,latitude:0});
   assert.ok(f.requests.every(request=>!request.body || !('observed_elapsed_ms' in request.body)));
   assert.ok(!f.requests.some(request=>request.path==='/aoslottery/ac_sub'));
-  assert.ok(f.logs.some(line=>line.includes('不执行抽奖或提现')));
+  assert.match(f.logs.at(-1),/今日签到记录已确认/);
+  assert.ok(!f.requests.some(request=>request.path.startsWith('/aospay/') ||
+    request.path.startsWith('/aoslottery/') || request.path.includes('withdraw')));
 });
 
-test('already-signed 1022 still reads records without another session or reward',async()=>{
+test('already-signed 1022 stops without another session, reward or auxiliary queries',async()=>{
   const f = fixture({already:true});
   const result = await run(configFrom({...env,MODE:'signin'}),f.deps);
   assert.equal(result.signin.already,true); assert.equal(result.balance,100);
   assert.equal(f.elapsed(),0); assert.equal(f.submissions(),0);
   assert.ok(!f.requests.some(request=>request.path==='/aossignin/stay_session'));
+  assert.match(f.logs.at(-1),/今日已签到/);
+  assert.ok(!f.requests.some(request=>request.path.startsWith('/aospay/') ||
+    request.path.startsWith('/aoslottery/') || request.path.includes('withdraw')));
+});
+
+test('1022 signin succeeds without auxiliary APIs even when they would return 1007',async()=>{
+  const now = Date.parse('2026-11-19T01:20:00Z');
+  const auxiliary = path => path.startsWith('/aospay/') || path.startsWith('/aoslottery/') || path.includes('withdraw');
+  for (const event of ['workflow_dispatch','schedule']) {
+    for (const already of [false,true]) {
+      const f = fixture({already,respond:({path})=>auxiliary(path)?reply({},'1007'):undefined});
+      const result = await executeAccount({...env,GITHUB_EVENT_NAME:event,MODE:'signin'},
+        `0:${event==='schedule'?now:0}`,{...f.deps,now:()=>now});
+      assert.equal(already?result.signin.already:result.signin.confirmed,true);
+      assert.equal(f.submissions(),already?0:1);
+      assert.ok(!f.requests.some(request=>auxiliary(request.path)));
+      assert.match(f.logs.at(-1),already?/今日已签到/:/今日签到记录已确认/);
+    }
+  }
+});
+
+test('1022 still fails if signin confirmation is missing or returns a business error',async()=>{
+  for (const failure of ['missing','1007']) {
+    const f = fixture({respond:({path,submissions})=>{
+      if (path.endsWith('/user_times') && submissions>0) {
+        return failure==='missing'?reply({day_remain:0}):reply({},failure);
+      }
+    }});
+    await assert.rejects(run(configFrom({...env,MODE:'signin'}),f.deps),Stop);
+    assert.equal(f.submissions(),1);
+    assert.ok(!f.logs.some(line=>line.includes('今日签到记录已确认')));
+  }
 });
 
 test('1022 insufficient wait budget or extra signin verification never creates a stay session',async()=>{
@@ -222,13 +256,13 @@ test('manual and scheduled 1022 runs never draw or withdraw even with positive l
   }
 });
 
-test('1022 workflow is independent, one hour later, manual-capable and protected by its own lock',async()=>{
+test('1022 runs daily at 07:20 Beijing time while 621 remains manual-only',async()=>{
   const root = new URL('../',import.meta.url);
   const old = await readFile(new URL('.github/workflows/callmeye.yml',root),'utf8');
   const next = await readFile(new URL('.github/workflows/activity-1022-regression.yml',root),'utf8');
-  const cron = text => /cron: '(\d+) (\d+) \* \* \*'/.exec(text);
-  const a = cron(old), b = cron(next);
-  assert.equal(Number(b[1])+Number(b[2])*60-(Number(a[1])+Number(a[2])*60),60);
+  assert.doesNotMatch(old,/^\s*schedule:|^\s*-\s*cron:/m);
+  assert.match(old,/workflow_dispatch:/);
+  assert.match(next,/schedule:\s*\n\s*#[^\n]*\n\s*- cron: '20 23 \* \* \*'/);
   assert.match(next,/workflow_dispatch:/); assert.match(next,/default: inspect/);
   assert.match(next,/LINPING_ACTIVITY: '1022'/);
   assert.match(next,/group: linping-1022-signin-accounts/);

@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: inspect 只查询；signin 真实停留签到（不抽奖、不提现）
+        description: inspect 只查询；signin 真实停留并确认签到后结束（不抽奖、不提现）
         required: true
         type: choice
         default: inspect
@@ -17,8 +17,8 @@ on:
         default: '200'
         type: string
   schedule:
-    # UTC 02:20 = 北京时间 10:20，比 621 的 09:20 晚一小时。
-    - cron: '20 2 * * *'
+    # 前一天 UTC 23:20 = 北京时间每天 07:20。
+    - cron: '20 23 * * *'
 
 permissions:
   contents: read
@@ -78,7 +78,7 @@ jobs:
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: '24'
-      - name: 1022 真实停留签到和记录查询（不抽奖、不提现）
+      - name: 1022 真实停留签到（确认当日签到后结束，不抽奖、不提现）
         env:
           ACCOUNT_SLOT: ${{ matrix.slot }}
         run: node scripts/daily.mjs --account "$ACCOUNT_SLOT"

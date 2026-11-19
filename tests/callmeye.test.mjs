@@ -234,12 +234,12 @@ test('inspect is read-only for user activity: no stay session, no reward',async(
   assert.deepEqual(paths,['/aosbase/user_info','/aossignin/user_times']);
   assert.ok(logs.some(x=>x.includes('inspect')));assert.ok(logs.every(x=>!x.includes(config.token)));
 });
-test('workflow runs real daily jobs with secret-free matrix and preserves manual modes',async()=>{
+test('closed 621 activity keeps only manual runs with secret-free matrix and selectable modes',async()=>{
   const yaml=await readFile(new URL('../.github/workflows/callmeye.yml',import.meta.url),'utf8');
-  assert.match(yaml,/schedule:/);
+  assert.match(yaml,/workflow_dispatch:/);
+  assert.doesNotMatch(yaml,/^\s*schedule:|^\s*-\s*cron:/m);
   assert.match(yaml,/contents: read/);assert.match(yaml,/cancel-in-progress: false/);
   assert.match(yaml,/secrets\.LINPING_TOKEN/);assert.doesNotMatch(yaml,/pull_request_target|contents: write/);
-  assert.match(yaml,/cron: '20 1 \* \* \*'/);
   assert.match(yaml,/secrets\.LINPING_ACCOUNTS/);
   assert.match(yaml,/MAX_WAIT_MINUTES: \$\{\{ inputs\.max_wait_minutes \}\}/);
   assert.ok(yaml.indexOf('node --test')<yaml.indexOf('id: plan'));

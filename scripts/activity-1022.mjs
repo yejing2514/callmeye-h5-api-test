@@ -36,6 +36,8 @@ export async function run1022(config, deps = {}) {
   log(`1022 测试账号验证通过：${user.user_id}；当前金币 ${user.gold}。`);
   const detail = await activity(fetchImpl,'1022');
   const signin = await runSignin(client,config,rawUser,detail,deps);
+  // A confirmed (or already recorded) signin is final; diagnostics are inspect-only.
+  if (config.mode === 'signin') return {signin,balance:signin.after ?? user.gold};
   const state = await read1022State(client,log,fetchImpl);
   return {signin,...state};
 }

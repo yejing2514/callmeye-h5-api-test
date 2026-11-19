@@ -16,10 +16,7 @@ on:
         required: true
         default: '200'
         type: string
-  # UTC 01:20，即北京时间 09:20；每个账号另外随机延迟 0～60 分钟。
-  # 随机窗口可用仓库变量 RANDOM_WINDOW_MINUTES 修改（0～90）。GitHub 可能延迟。
-  schedule:
-    - cron: '20 1 * * *'
+  # 621 活动已结束：仅保留手动入口，不再设置每日排程。
 
 permissions:
   contents: read
@@ -78,7 +75,7 @@ jobs:
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: '24'
-      - name: 按计划执行（每日自动签到 / 手动选定模式）
+      - name: 按手动选定模式执行（621 活动已结束）
         env:
           LINPING_ACCOUNTS: ${{ secrets.LINPING_ACCOUNTS }}
           LINPING_TOKEN: ${{ secrets.LINPING_TOKEN }}

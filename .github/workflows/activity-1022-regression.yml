@@ -1,64 +1,49 @@
-name: 1022 签到离线回归
-run-name: >-
-  ${{ github.event_name == 'workflow_dispatch' && '1022 手动回归'
-      || github.event_name == 'workflow_run' && '1022：621 结束后回归'
-      || '1022：独立排程检查' }}
+name: 1022 活动完整流程
 
 on:
   workflow_dispatch:
-  workflow_run:
-    workflows: ['H5 接口测试']
-    types: [completed]
+    inputs:
+      mode:
+        description: inspect 只查询；signin 真实停留签到（不抽奖、不提现）
+        required: true
+        type: choice
+        default: inspect
+        options:
+          - inspect
+          - signin
+      max_wait_minutes:
+        description: 等待上限（0～200 分钟；三小时签到建议填 200）
+        required: true
+        default: '200'
+        type: string
   schedule:
-    # 仅在 621 被手动停用时独立运行：05:20 UTC = 北京时间 13:20。
-    - cron: '20 5 * * *'
+    # UTC 02:20 = 北京时间 10:20，比 621 的 09:20 晚一小时。
+    - cron: '20 2 * * *'
 
-permissions: {}
+permissions:
+  contents: read
+
+concurrency:
+  group: linping-1022-signin-accounts
+  cancel-in-progress: false
+
+env:
+  LINPING_ACTIVITY: '1022'
+  LINPING_ACCOUNTS: ${{ secrets.LINPING_1022_ACCOUNTS || (!secrets.LINPING_1022_TOKEN && secrets.LINPING_ACCOUNTS) || '' }}
+  LINPING_TOKEN: ${{ secrets.LINPING_1022_TOKEN || secrets.LINPING_TOKEN }}
+  LINPING_DEVICE_ID: ${{ secrets.LINPING_1022_DEVICE_ID || secrets.LINPING_DEVICE_ID }}
+  LINPING_USER_ID: ${{ vars.LINPING_1022_USER_ID || vars.LINPING_USER_ID || '19426008' }}
+  MODE: ${{ inputs.mode }}
+  MAX_WAIT_MINUTES: ${{ inputs.max_wait_minutes }}
+  RANDOM_WINDOW_MINUTES: ${{ vars.LINPING_1022_RANDOM_WINDOW_MINUTES || vars.RANDOM_WINDOW_MINUTES || '60' }}
 
 jobs:
-  check_621:
-    name: 检查 621 是否已停用
-    if: ${{ github.event_name == 'schedule' && vars.LINPING_1022_DAILY != 'false' }}
-    permissions:
-      actions: read
+  prepare:
+    if: ${{ github.event_name != 'schedule' || vars.LINPING_1022_DAILY != 'false' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 3
+    timeout-minutes: 10
     outputs:
-      should_run: ${{ steps.check.outputs.should_run }}
-    steps:
-      - name: 读取 621 工作流状态
-        id: check
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          state=$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/callmeye.yml" --jq '.state')
-          if [[ "$state" == 'disabled_manually' ]]; then
-            echo 'should_run=true' >> "$GITHUB_OUTPUT"
-          else
-            echo '621 未被手动停用；1022 等待 621 的定时运行结束。'
-            echo 'should_run=false' >> "$GITHUB_OUTPUT"
-          fi
-
-  contract:
-    name: 1022 离线回归
-    needs: check_621
-    if: >-
-      ${{ !cancelled() && (
-          github.event_name == 'workflow_dispatch' || (
-            vars.LINPING_1022_DAILY != 'false' && (
-              (github.event_name == 'workflow_run'
-                && github.event.workflow_run.path == '.github/workflows/callmeye.yml'
-                && github.event.workflow_run.event == 'schedule'
-                && github.event.workflow_run.head_branch == github.event.repository.default_branch
-                && github.event.workflow_run.run_attempt == 1)
-              || (github.event_name == 'schedule' && needs.check_621.outputs.should_run == 'true')
-            )
-          )
-      ) }}
-    permissions:
-      contents: read
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
+      slots: ${{ steps.plan.outputs.slots }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
@@ -66,5 +51,34 @@ jobs:
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: '24'
-      - name: 检查 1022 计时会话和金币奖励（离线）
-        run: node --test tests/activity-1022/contract.test.mjs
+      - name: 离线自测（不接触 Token）
+        env:
+          LINPING_ACCOUNTS: ''
+          LINPING_TOKEN: ''
+          LINPING_DEVICE_ID: ''
+        run: node --test tests/*.test.mjs tests/activity-1022/*.test.mjs
+      - name: 校验账号并生成独立启动计划
+        id: plan
+        run: node scripts/daily.mjs --plan
+
+  signin:
+    name: 1022 账号 ${{ matrix.slot }}
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        slot: ${{ fromJSON(format('[{0}]', needs.prepare.outputs.slots)) }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24'
+      - name: 1022 真实停留签到和记录查询（不抽奖、不提现）
+        env:
+          ACCOUNT_SLOT: ${{ matrix.slot }}
+        run: node scripts/daily.mjs --account "$ACCOUNT_SLOT"

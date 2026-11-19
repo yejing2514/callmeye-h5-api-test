@@ -9,6 +9,9 @@ export const PAGE = 'https://linping.y-h5.iyunxh.com/module-page/home/home?id=62
 export const UA = 'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36 YUNXH-YDAPP/1.0';
 export const MAX_WAIT_MINUTES = 200;
 export const CHECKPOINT_INTERVAL_MS = 60000;
+export const ACTIVITY_1022 = Object.freeze({
+  pageId:'1022', signinId:10609054, lotteryId:'a13d10304994b98ae3de08', withdrawalId:13109567
+});
 const EXPECTED_USER = 19426008;
 const EXPECTED_TENANT = 59;
 const MD5 = value => createHash('md5').update(value).digest('hex');
@@ -33,6 +36,8 @@ export function decodeObject(value, base64 = false) {
 }
 
 export function configFrom(env) {
+  const pageId = env.LINPING_ACTIVITY || '621';
+  if (!['621','1022'].includes(pageId)) throw new Stop('LINPING_ACTIVITY 只能是 621 或 1022。');
   const token = env.LINPING_TOKEN?.trim();
   if (!token || /[\r\n]/.test(token)) throw new Stop('请先在 GitHub Secrets 配置 LINPING_TOKEN（仅 Token 本身）。');
   const mode = env.MODE || 'inspect';
@@ -42,7 +47,13 @@ export function configFrom(env) {
   const device = env.LINPING_DEVICE_ID?.trim();
   if (device && !/^[\w-]{1,128}$/.test(device)) throw new Stop('LINPING_DEVICE_ID 格式不正确。');
   const userId = expectedUserId(env.LINPING_USER_ID === undefined ? EXPECTED_USER : env.LINPING_USER_ID);
-  return {token, mode, maxWait, device, userId};
+  const config = {token, mode, maxWait, device, userId};
+  if (pageId === '1022') {
+    config.activity = pageId;
+    // Separate test clients even when both workflows reuse the same accounts.
+    config.device = createHash('sha256').update(`linping-h5-api-test:1022:${userId}:${device || ''}`).digest('hex').slice(0,32);
+  }
+  return config;
 }
 
 export function expectedUserId(value = EXPECTED_USER) {
@@ -140,13 +151,14 @@ export async function tenant(fetchImpl = fetch) {
 export class Client {
   constructor(config, settings, fetchImpl = fetch) {
     this.config = config; this.settings = settings; this.fetchImpl = fetchImpl;
+    this.page = config.activity === '1022' ? PAGE.replace('id=621','id=1022') : PAGE;
     this.deviceToken = null;
   }
   async initDevice() {
     this.deviceToken = null;
     const headers = {'Access-T-Id':'59','Access-T-Id-In':'59','Access-Api-Unique-Token':'1',
       'Access-Api-Dt':this.config.device || randomUUID(), 'User-Agent':UA,
-      'Origin':new URL(PAGE).origin, 'Referer':PAGE};
+      'Origin':new URL(this.page).origin, 'Referer':this.page};
     const value = ok(await jsonRequest(`${API}/aosbase/_auth_dt`, {headers}, this.fetchImpl), '设备会话初始化');
     if (typeof value !== 'string' || value.length < 64) throw new Stop('设备会话格式发生变化；停止。');
     // Same extraction as the H5 filterDeviceToken(). Not an App credential refresh.
@@ -159,12 +171,22 @@ export class Client {
   async call(path, data = {}, method = 'GET') {
     const allowed = new Set(['/aosbase/user_info','/aossignin/user_times','/aossignin/stay_session',
       '/aossignin/stay_session/checkpoint','/aossignin/stay_session/status','/aossignin/ac_sub']);
-    if (!allowed.has(path) || !['GET','POST'].includes(method)) throw new Stop('拒绝未列入测试范围的接口。');
+    const extra = new Map([
+      ['/aossignin/stay_session/recover','POST'],
+      ['/aoslottery/ac_lottery_times','GET'], ['/aoslottery/act_user','GET'],
+      ['/aoslottery/act_record','GET'], ['/aoslottery/record_code_detail','GET'],
+      ['/aospay/virtual_currency_user_wallet','GET'],
+      ['/aosbase/withdraw_getconfig','GET'], ['/aospay/virtual_currency_user_bill','GET'],
+      ['/aosbase/withdraw_show','GET']
+    ]);
+    if ((!allowed.has(path) && !(this.config.activity === '1022' && extra.get(path) === method)) ||
+        !['GET','POST'].includes(method)) throw new Stop('拒绝未列入测试范围的接口。');
     if (!this.deviceToken) throw new Stop('设备会话尚未初始化。');
     const headers = {'Access-Token':this.config.token, 'Access-User-Id':String(expectedUserId(this.config.userId)),
       'Access-T-Id':'59', 'Access-T-Id-In':'59', 'Access-Api-Unique-Token':'1',
       'Access-Wxclient-Type':'wx_app', 'Access-Api-Signature':signature(this.settings.appid,this.settings.appkey),
-      'Access-Api-Dt':this.deviceToken, 'User-Agent':UA, 'Origin':new URL(PAGE).origin, 'Referer':PAGE};
+      'Access-Api-Dt':this.deviceToken, 'User-Agent':UA, 'Origin':new URL(this.page).origin, 'Referer':this.page};
+    if (this.config.activity === '1022') headers.token = this.config.token;
     const url = new URL(API + path);
     const options = {method, headers};
     if (method === 'GET') for (const [key,value] of Object.entries(data)) url.searchParams.set(key,String(value));
@@ -184,7 +206,16 @@ export function activityFromPage(data) {
   return id;
 }
 
-export async function activity(fetchImpl = fetch) {
+export async function activity(fetchImpl = fetch, pageId = '621') {
+  if (pageId === '1022') {
+    const id = ACTIVITY_1022.signinId;
+    const detail = ok(await jsonRequest(`${STATIC}/static_3/aossignin/_ac_detail/${id}.json`,{},fetchImpl),'加载活动');
+    if (Number(detail?.id) !== id || (detail.t_id !== undefined && Number(detail.t_id) !== EXPECTED_TENANT)) {
+      throw new Stop('1022 活动身份或租户异常。');
+    }
+    return {...detail, id, rule:decodeObject(detail.rule), other_set:decodeObject(detail.other_set)};
+  }
+  if (pageId !== '621') throw new Stop('未知活动；停止。');
   const page=ok(await jsonRequest(`${STATIC}/cms/page_getattr/621.json`,{},fetchImpl),'加载页面');
   const id=activityFromPage(page);
   const detail=ok(await jsonRequest(`${STATIC}/static_3/aossignin/_ac_detail/${id}.json`,{},fetchImpl),'加载活动');
@@ -192,7 +223,7 @@ export async function activity(fetchImpl = fetch) {
   return {...detail, id, rule:decodeObject(detail.rule), other_set:decodeObject(detail.other_set)};
 }
 
-export function checkRule(detail, user, now = Date.now()) {
+export function checkAccess(detail, user, now = Date.now()) {
   const start=Number(detail.start_time)*1000, end=Number(detail.end_time)*1000;
   if (!Number.isFinite(start) || !Number.isFinite(end) || now<start || now>end) throw new Stop('活动不在有效期内。');
   const limit=detail.rule.submit_limit, cheat=detail.rule.prevent_cheat, area=cheat?.area_limit;
@@ -203,6 +234,11 @@ export function checkRule(detail, user, now = Date.now()) {
       Number(detail.other_set.is_bind_app) || (Number(cheat.is_open_phone_verify) && !Number(user.phone_verify))) {
     throw new Stop('活动包含额外验证条件；本测试器不代填定位、不解验证码、不绕过限制，请在原 App 完成。');
   }
+}
+
+export function checkRule(detail, user, now = Date.now()) {
+  checkAccess(detail,user,now);
+  const limit=detail.rule.submit_limit;
   if (Number(limit.open_stay_time)!==1 || !Number.isFinite(Number(limit.stay_time)) || Number(limit.stay_time)<=0) {
     throw new Stop('停留规则与本测试器预期不符；停止。');
   }
@@ -280,7 +316,27 @@ export async function submitOnce(client, id, current, log, expected = EXPECTED_U
   return {confirmed,before,after};
 }
 
+export async function runSignin(client, config, rawUser, detail, deps = {}) {
+  const log=deps.log||console.log, fetchImpl=deps.fetch||fetch;
+  log(`页面 ${config.activity || '621'} 对应签到活动 ${detail.id}；停留规则 ${Number(detail.rule.submit_limit?.stay_time)||0} 秒。`);
+  if (signed(await client.call('/aossignin/user_times',{activity_id:detail.id}))) { log('今日已签到，未创建新会话，也未重复提交。'); return {already:true}; }
+  if (config.mode==='inspect') { log('检查完成。inspect 不创建停留会话，不提交签到。选择 signin 才会真实等待并尝试签到。'); return {inspect:true}; }
+  checkRule(detail,rawUser);
+  checkWaitBudget(detail,config.maxWait);
+  const current=await eligible(client,detail.id,config.maxWait,log,deps);
+  const latest=await activity(fetchImpl,config.activity);
+  if (latest.id!==detail.id) throw new Stop('等待期间页面活动发生变化；停止。');
+  const latestUser=await client.call('/aosbase/user_info');
+  identity(latestUser,config.userId);
+  checkRule(latest,latestUser);
+  return await submitOnce(client,detail.id,current,log,config.userId);
+}
+
 export async function run(config, deps = {}) {
+  if (config.activity === '1022') {
+    const {run1022} = await import('./activity-1022.mjs');
+    return await run1022(config,deps);
+  }
   const log=deps.log||console.log, fetchImpl=deps.fetch||fetch;
   const settings=await tenant(fetchImpl);
   const client=deps.client||new Client(config,settings,fetchImpl);
@@ -289,19 +345,7 @@ export async function run(config, deps = {}) {
   const user=identity(rawUser,config.userId);
   log(`测试账号验证通过：${user.user_id}；当前金币 ${user.gold}。`);
   const detail=await activity(fetchImpl);
-  log(`页面 621 对应签到活动 ${detail.id}；停留规则 ${Number(detail.rule.submit_limit?.stay_time)||0} 秒。`);
-  if (signed(await client.call('/aossignin/user_times',{activity_id:detail.id}))) { log('今日已签到，未创建新会话，也未重复提交。'); return; }
-  if (config.mode==='inspect') { log('检查完成。inspect 不创建停留会话，不提交签到。选择 signin 才会真实等待并尝试签到。'); return; }
-  checkRule(detail,rawUser);
-  checkWaitBudget(detail,config.maxWait);
-  const current=await eligible(client,detail.id,config.maxWait,log,deps);
-  // Configuration may have changed while waiting several hours.
-  const latest=await activity(fetchImpl);
-  if (latest.id!==detail.id) throw new Stop('等待期间页面活动发生变化；停止。');
-  const latestUser=await client.call('/aosbase/user_info');
-  identity(latestUser,config.userId);
-  checkRule(latest,latestUser);
-  await submitOnce(client,detail.id,current,log,config.userId);
+  return await runSignin(client,config,rawUser,detail,deps);
 }
 
 async function main() {

@@ -6,3 +6,4 @@ node_modules/
 *.log
 *token*.json
 *.md
+!/docs/activity-1022.md
